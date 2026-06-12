@@ -64,7 +64,7 @@ javascript:(function(){
   pinDiv.appendChild(pinLabel);
   const pinInput = c("input");
   pinInput.type = "text";
-  pinInput.placeholder = "e.g. 560001";
+  pinInput.placeholder = "e.g. 411021";
   pinInput.maxLength = 6;
   pinInput.pattern = "[0-9]{6}";
   pinInput.value = localStorage.getItem("z_pin") || "";
@@ -107,68 +107,159 @@ javascript:(function(){
     } else if (t) t.remove();
   };
 
-  // Apply pincode to the site's location/pincode input
+  const isOurs = el => el && el.closest(".z-dock");
+
+  // Find the product search input (NOT the address input)
+  const findSearchInput = () => {
+    // On /search page, Zepto renders an actual input
+    const all = qa('input[type="text"], input[type="search"], input:not([type])');
+    return all.find(el => {
+      if (isOurs(el)) return false;
+      const ph = (el.placeholder || "").toLowerCase();
+      // Skip address/pincode inputs
+      if (/(address|deliver|location|pincode|pin code|locality|area)/.test(ph)) return false;
+      return /(search|find|looking|product)/.test(ph)
+        || el.getAttribute("role") === "search"
+        || el.closest('[role="search"]')
+        || el.closest('[data-testid*="search"]');
+    }) || all.find(el => {
+      if (isOurs(el)) return false;
+      const ph = (el.placeholder || "").toLowerCase();
+      if (/(address|deliver|location|pincode|pin code|locality|area)/.test(ph)) return false;
+      return el.offsetParent !== null;
+    });
+  };
+
+  // Navigate to search page if needed (Zepto homepage has <a href="/search"> not an input)
+  const ensureSearchPage = async () => {
+    let sb = findSearchInput();
+    if (sb) return sb;
+    // Zepto: click the search bar link to navigate to /search
+    const searchLink = q('[data-testid="search-bar-icon"]') || q('a[href*="/search"]');
+    if (searchLink) {
+      searchLink.click();
+      await w(2500);
+      sb = findSearchInput();
+      if (sb) return sb;
+    }
+    // Try navigating directly
+    if (!window.location.pathname.startsWith("/search")) {
+      window.location.href = "/search";
+      await w(3000);
+      sb = findSearchInput();
+      if (sb) return sb;
+    }
+    throw "No Search";
+  };
+
+  // Apply pincode: open location panel, type pincode, pick suggestion, confirm
   const applyPincode = async (pc) => {
     if (!pc) return;
     const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
     const k = { bubbles: true, key: "Enter", keyCode: 13, which: 13 };
 
-    // Strategy 1: Look for pincode/location button and click it to open modal
-    const locBtns = qa('button, div, span, a').filter(e => {
-      const t = (e.innerText || "").toLowerCase();
-      const a = (e.getAttribute("aria-label") || "").toLowerCase();
-      return /(deliver|location|pincode|pin code|zip|postal|area|address|city)/i.test(t + " " + a);
-    });
-    if (locBtns.length) {
-      locBtns[0].click();
-      await w(1500);
-    }
-
-    // Strategy 2: Find pincode/location input field
-    const inputs = qa('input[type="text"], input[type="tel"], input[type="number"], input:not([type])').filter(e => {
-      const ph = (e.placeholder || "").toLowerCase();
-      const nm = (e.name || "").toLowerCase();
-      const ar = (e.getAttribute("aria-label") || "").toLowerCase();
-      const id = (e.id || "").toLowerCase();
-      return /(pin|zip|postal|area|location|deliver|city|address)/i.test(ph + " " + nm + " " + ar + " " + id);
-    });
-
-    let target = inputs[0];
-    if (!target) {
-      // Fallback: any visible input in a modal/overlay
-      const modals = qa('[class*="modal"], [class*="overlay"], [class*="popup"], [class*="dialog"], [role="dialog"]');
-      for (const m of modals) {
-        const inp = m.querySelector('input[type="text"], input[type="tel"], input[type="number"], input:not([type])');
-        if (inp) { target = inp; break; }
-      }
-    }
-
-    if (target) {
-      target.focus();
-      set.call(target, "");
-      target.dispatchEvent(new Event("input", { bubbles: true }));
-      await w(200);
-      set.call(target, pc);
-      target.dispatchEvent(new Event("input", { bubbles: true }));
-      target.dispatchEvent(new Event("change", { bubbles: true }));
-      await w(500);
-
-      // Try clicking a confirm/apply/check button
-      const confirmBtns = qa('button, [role="button"]').filter(e => {
-        const t = (e.innerText || "").toLowerCase();
-        return /(apply|check|confirm|submit|go|set|update|deliver|save)/i.test(t) && e.offsetParent !== null;
+    // Step 1: Click location/delivery area in header to open address panel
+    // Zepto: the location display is in the header, near the logo
+    const header = q("header");
+    let locBtn = null;
+    if (header) {
+      // Find clickable elements in header that look like location selectors
+      const headerEls = qa("header div, header button, header span, header a").filter(e => {
+        if (isOurs(e)) return false;
+        const t = (e.innerText || "").trim();
+        // Location area often shows delivery time or area name, short text
+        if (t.length > 0 && t.length < 60 && e.offsetParent !== null) {
+          const lower = t.toLowerCase();
+          return /(deliver|location|min|change|address|area|pincode)/.test(lower);
+        }
+        return false;
       });
-      if (confirmBtns.length) {
-        confirmBtns[0].click();
-        await w(2000);
-      } else {
-        target.dispatchEvent(new KeyboardEvent("keydown", k));
-        target.dispatchEvent(new KeyboardEvent("keyup", k));
-        await w(2000);
-      }
-      return true;
+      locBtn = headerEls[0];
     }
-    throw "No pincode input found";
+    if (!locBtn) {
+      // Generic: find any button/div mentioning delivery/location
+      const btns = qa("button, div, span, a").filter(e => {
+        if (isOurs(e)) return false;
+        const t = (e.innerText || "").toLowerCase();
+        return /(deliver|location|pincode|change address|add address)/.test(t)
+          && e.offsetParent !== null && e.innerText.length < 80;
+      });
+      locBtn = btns[0];
+    }
+    if (locBtn) {
+      locBtn.click();
+      await w(2000);
+    }
+
+    // Step 2: Find the address/pincode input
+    // Zepto: placeholder="Search a new address"
+    let target = null;
+    const addrSelectors = [
+      'input[placeholder*="address" i]',
+      'input[placeholder*="pincode" i]',
+      'input[placeholder*="location" i]',
+      'input[placeholder*="locality" i]',
+      'input[placeholder*="area" i]'
+    ];
+    for (const sel of addrSelectors) {
+      target = q(sel);
+      if (target && !isOurs(target)) break;
+      target = null;
+    }
+    if (!target) {
+      // Check inside modals/overlays
+      const containers = qa('[class*="modal"], [class*="overlay"], [class*="popup"], [class*="dialog"], [role="dialog"], [class*="sidebar"], [class*="drawer"]');
+      for (const ctr of containers) {
+        const inp = ctr.querySelector('input[type="text"], input[type="tel"], input:not([type])');
+        if (inp && !isOurs(inp)) { target = inp; break; }
+      }
+    }
+    if (!target) throw "No pincode input found";
+
+    // Step 3: Clear and type pincode
+    target.focus();
+    set.call(target, "");
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    await w(300);
+    set.call(target, pc);
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    await w(2500);
+
+    // Step 4: Pick first suggestion from dropdown
+    const suggestions = qa('div, li, a, button').filter(e => {
+      if (isOurs(e)) return false;
+      if (!e.offsetParent) return false;
+      const t = e.innerText.trim();
+      // Suggestions typically contain the pincode or area name, not too short, not too long
+      if (t.length < 5 || t.length > 200) return false;
+      // Must be near/inside a dropdown-like container or the address panel
+      const parent = e.closest('[class*="suggestion"], [class*="result"], [class*="dropdown"], [class*="autocomplete"], [class*="listItem"], [class*="address"], [class*="modal"], [class*="overlay"], [class*="sidebar"], [class*="drawer"]');
+      return parent !== null;
+    });
+    if (suggestions.length) {
+      suggestions[0].click();
+      await w(2500);
+    } else {
+      // Fallback: press Enter
+      target.dispatchEvent(new KeyboardEvent("keydown", k));
+      target.dispatchEvent(new KeyboardEvent("keyup", k));
+      await w(2000);
+    }
+
+    // Step 5: Click confirm/save/deliver-here button if present
+    const confirmBtns = qa("button, [role='button']").filter(e => {
+      if (isOurs(e)) return false;
+      const t = (e.innerText || "").toLowerCase().trim();
+      return /(confirm|save|set|apply|deliver here|yes|continue)/i.test(t)
+        && e.offsetParent !== null && t.length < 30;
+    });
+    if (confirmBtns.length) {
+      confirmBtns[0].click();
+      await w(2500);
+    }
+    return true;
   };
 
   const SORT = () => {
@@ -259,7 +350,7 @@ javascript:(function(){
     b.classList.add("act");
     b.innerText = "...";
     try {
-      // Apply pincode first if set
+      // Step 1: Apply pincode first if set
       const pc = pinInput.value.trim();
       if (pc && /^\d{5,6}$/.test(pc)) {
         msg("Setting pincode: " + pc);
@@ -267,32 +358,28 @@ javascript:(function(){
         await w(1000);
       }
 
-      let sb = q('input[type="text"]');
-      if (!sb) {
-        const ic = q('a[href*="search"]');
-        if (ic) { ic.click(); await w(1500); sb = q('input[type="text"]'); }
-      }
-      if (!sb) throw "No Search";
+      // Step 2: Navigate to search page and find search input
+      msg("Opening search...");
+      const sb = await ensureSearchPage();
 
+      // Step 3: Clear old results and search
       qa("a").filter(e => e.textContent.includes("₹")).forEach(e => e.remove());
       msg("Search: " + cat);
-      if (sb) {
-        const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-        const k = { bubbles: true, key: "Enter", keyCode: 13, which: 13 };
-        sb.focus();
-        set.call(sb, "");
-        sb.dispatchEvent(new Event("input", { bubbles: true }));
-        await w(200);
-        sb.dispatchEvent(new KeyboardEvent("keydown", k));
-        sb.dispatchEvent(new KeyboardEvent("keyup", k));
-        await w(1000);
-        set.call(sb, cat);
-        sb.dispatchEvent(new Event("input", { bubbles: true }));
-        await w(500);
-        sb.dispatchEvent(new KeyboardEvent("keydown", k));
-        sb.dispatchEvent(new KeyboardEvent("keyup", k));
-        await w(2500);
-      } else { throw "Input Locked"; }
+      const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      const k = { bubbles: true, key: "Enter", keyCode: 13, which: 13 };
+      sb.focus();
+      set.call(sb, "");
+      sb.dispatchEvent(new Event("input", { bubbles: true }));
+      await w(200);
+      sb.dispatchEvent(new KeyboardEvent("keydown", k));
+      sb.dispatchEvent(new KeyboardEvent("keyup", k));
+      await w(1000);
+      set.call(sb, cat);
+      sb.dispatchEvent(new Event("input", { bubbles: true }));
+      await w(500);
+      sb.dispatchEvent(new KeyboardEvent("keydown", k));
+      sb.dispatchEvent(new KeyboardEvent("keyup", k));
+      await w(2500);
       await SCROLL_AND_LOAD();
       await PROC();
     } catch (e) { TT(0); alert(e); }
@@ -306,7 +393,7 @@ javascript:(function(){
     ld.style.display = "flex";
     b.innerText = "...";
     try {
-      let sb = q('input[type="text"]');
+      const sb = findSearchInput();
       if (sb && sb.value.length > 0) {
         msg("Refreshing...");
         sb.focus();
